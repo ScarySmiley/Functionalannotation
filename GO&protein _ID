@@ -1,0 +1,211 @@
+# Load required libraries
+library(tidyverse)
+
+# Load data
+deepgo_df <- read.delim('combined_data_separated.tsv')
+pannzer_df <- read.csv('panncombined_data.csv')
+eggnog_df <- read.csv('eggnogcombined.csv', header = TRUE)
+
+# deepgo_df
+deepgo_selected <- deepgo_df[, c("ID", "GO_Term")]
+colnames(deepgo_selected) <- c("protein_id", "go_term")
+
+#eggnog_df
+eggnog_selected <- eggnog_df[, c("query", "GOs")]
+colnames(eggnog_selected) <- c("protein_id", "go_term")
+
+#Pannzer_df
+# Assuming column 2 is 'protein_id' and column 4 is 'go_term' (GO ID) based on provided data
+pannzer_selected <- pannzer_df[, c(1, 3)]
+colnames(pannzer_selected) <- c("protein_id", "go_term")
+
+# Format the GO terms to have the 'GO:XXXXXXX' format
+
+# Step 1: Trim whitespace from the go_term column
+pannzer_selected$go_term <- trimws(pannzer_selected$go_term)
+
+# Step 2: Identify numeric GO terms using a regular expression to filter only numbers
+is_numeric_go_term <- grepl("^[0-9]+$", pannzer_selected$go_term)
+
+# Step 3: Format numeric GO terms with sprintf for padding with leading zeros
+pannzer_selected$go_term[is_numeric_go_term] <- sprintf("GO:%07d", as.numeric(pannzer_selected$go_term[is_numeric_go_term]))
+
+# Step 4: Non-numeric GO terms remain unchanged
+
+# View the first few rows to verify
+print(head(pannzer_selected))
+
+
+# Convert EggNOG data to long format
+eggnog_expanded <- eggnog_selected %>%
+  separate_rows(go_term, sep = ",")
+
+#function
+
+count_go_terms <- function(df, tool_name) {
+  # Count the frequency of each GO term
+  go_term_counts <- as.data.frame(table(df$go_term))
+  
+  # Rename columns
+  colnames(go_term_counts) <- c("go_term", "count")
+  
+  # Add a column indicating the tool
+  go_term_counts$tool <- tool_name
+  
+  return(go_term_counts)
+}
+
+
+# Count GO term frequencies for each tool
+deepgo_counts <- count_go_terms(deepgo_selected, "DeepGO")
+eggnog_counts <- count_go_terms(eggnog_expanded, "EggNOG")
+pannzer_counts <- count_go_terms(pannzer_selected, "Pannzer")
+
+# Combine data from all tools
+all_counts <- rbind(deepgo_counts, eggnog_counts, pannzer_counts)
+
+
+# Plot histogram with facet_wrap
+ggplot(all_counts, aes(x=log(count), fill=tool)) +
+  geom_histogram(binwidth=0.5) +
+  facet_wrap(~tool) +
+  labs(title="GO Term Frequency Distribution by Tool",
+       x="GO Term Frequency",
+       y="Count") +
+  theme_minimal() 
+
+## Also join data width wise - need to join two at a time - so join deepgo and eggnog
+wide_count <- full_join(deepgo_counts, eggnog_counts, by="go_term",suffix=c("_deepgo", "_eggnog"))
+
+## Now join pannzer to this 
+wide_count <- full_join(wide_count, pannzer_counts, by="go_term")
+
+## Drop column called tool because it doesn't make sense in this context! 
+wide_count <- wide_count %>% select(-contains(c('tool')))
+
+## Name count column to be called pannzer 
+wide_count = wide_count %>% rename(count_pannzer=count)
+
+## Replace any NAs 
+wide_count_nas_removed <- wide_count %>% replace(is.na(.), 0)
+
+long_count <- gather(wide_count_nas_removed, tool, count, count_deepgo:count_pannzer)
+
+### Unlogged so high the counts that you it skews without a log 
+ggplot(long_count, aes(x=tool, y=count, fill=tool)) +
+  geom_boxplot() +
+  labs(title="GO Term Frequency Distribution by Tool",
+       x="GO Term Frequency",
+       y="Count") +
+  theme_minimal() 
+
+### Make a boxplot 
+ggplot(long_count, aes(x=tool, y=log(count), fill=tool)) +
+  geom_boxplot() +
+  labs(title="GO Term Frequency Distribution by Tool",
+       x="GO Term Frequency",
+       y="Count") +
+  theme_minimal() 
+
+
+# Write the wide format table to a CSV file using write_csv
+write_csv(wide_count_nas_removed, file = "wide_count_table.csv")
+
+## Do the same for proteins 
+count_proteins <- function(df, tool_name) {
+  # Count the frequency of each protein ID
+  prot_counts <- as.data.frame(table(df$protein_id))
+  
+  # Rename columns
+  colnames(prot_counts) <- c("protein_id", "count")
+  
+  # Add a column indicating the tool
+  prot_counts$tool <- tool_name
+  
+  return(prot_counts)
+}
+
+
+# Count protein ID frequencies for each tool
+deepgo_prots <- count_proteins(deepgo_selected, "DeepGO")
+eggnog_prots <- count_proteins(eggnog_expanded, "EggNOG")
+pannzer_prots <- count_proteins(pannzer_selected, "Pannzer")
+
+
+## Also join data width wise - need to join two at a time - so join deepgo and eggnog
+wide_prot <- full_join(deepgo_prots, eggnog_prots, by="protein_id",suffix=c("_deepgo", "_eggnog"))
+
+## Now join pannzer to this 
+wide_prot <- full_join(wide_prot, pannzer_prots, by="protein_id")
+
+## Drop column called tool because it doesn't make sense in this context! 
+wide_prot <- wide_prot %>% select(-contains(c('tool')))
+
+## Name count column to be called pannzer 
+wide_prot = wide_prot %>% rename(count_pannzer=count)
+
+## Replace any NAs 
+wide_prot_nas_removed <- wide_prot %>% replace(is.na(.), 0)
+
+# Reshape data using pivot_longer (newer approach)
+long_count <- pivot_longer(wide_prot_nas_removed, 
+                           cols = starts_with("count_"), 
+                           names_to = "tool", 
+                           values_to = "count")
+
+# Create the box plot
+ggplot(long_count, aes(x = tool, y = count, fill = tool)) +
+  geom_boxplot() +
+  labs(title = "Protein Count Comparison Across Tools",
+       x = "Tool",
+       y = "Count") +
+  theme_minimal()
+
+
+# Unique protein counts for each tool
+unique_deepgo <- nrow(deepgo_prots)
+unique_eggnog <- nrow(eggnog_prots)
+unique_pannzer <- nrow(pannzer_prots)
+
+# Print the results
+cat("Unique protein counts:\n")
+cat("DeepGO:", unique_deepgo, "\n")
+cat("EggNOG:", unique_eggnog, "\n")
+cat("Pannzer:", unique_pannzer, "\n")
+
+
+# Extract the protein IDs from each tool
+deepgo_ids <- deepgo_prots$protein_id
+eggnog_ids <- eggnog_prots$protein_id
+pannzer_ids <- pannzer_prots$protein_id
+
+# Calculate intersections (matching protein IDs)
+matching_deepgo_eggnog <- length(intersect(deepgo_ids, eggnog_ids))
+matching_deepgo_pannzer <- length(intersect(deepgo_ids, pannzer_ids))
+matching_eggnog_pannzer <- length(intersect(eggnog_ids, pannzer_ids))
+
+# Calculate the intersection of all three tools
+matching_all_tools <- length(Reduce(intersect, list(deepgo_ids, eggnog_ids, pannzer_ids)))
+
+# Print the results
+cat("\nMatching protein counts between tools:\n")
+cat("DeepGO and EggNOG:", matching_deepgo_eggnog, "\n")
+cat("DeepGO and Pannzer:", matching_deepgo_pannzer, "\n")
+cat("EggNOG and Pannzer:", matching_eggnog_pannzer, "\n")
+cat("All three tools:", matching_all_tools, "\n")
+
+
+# Prepare data for visualization
+library(ggplot2)
+
+# Create a data frame for plotting
+plot_data <- data.frame(
+  Tool = rep(c("DeepGO", "EggNOG", "Pannzer"), times = c(length(deepgo_ids), length(eggnog_ids), length(pannzer_ids))),
+  Protein_ID = c(deepgo_ids, eggnog_ids, pannzer_ids)
+)
+
+# Plot the counts
+ggplot(plot_data, aes(x = Tool, fill = Tool)) +
+  geom_bar() +
+  labs(title = "Protein Counts by Tool", x = "Tool", y = "Count") +
+  theme_minimal()
